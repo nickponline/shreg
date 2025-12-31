@@ -1,0 +1,2 @@
+[console_scripts]
+shreg = shreg.__main__:main

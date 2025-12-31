@@ -1,0 +1,37 @@
+Metadata-Version: 2.4
+Name: shreg
+Version: 0.1.0
+Summary: Shape Regularization - A Python implementation of CGAL Shape Regularization algorithms
+Author: Nick P
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/nickp/shreg
+Project-URL: Documentation, https://github.com/nickp/shreg#readme
+Project-URL: Repository, https://github.com/nickp/shreg
+Project-URL: Issues, https://github.com/nickp/shreg/issues
+Keywords: shape-regularization,geometry,segments,contours,cgal,optimization,computer-vision
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Science/Research
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering
+Classifier: Topic :: Scientific/Engineering :: Image Processing
+Classifier: Topic :: Scientific/Engineering :: Mathematics
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.20.0
+Requires-Dist: scipy>=1.7.0
+Requires-Dist: osqp>=0.6.0
+Requires-Dist: matplotlib>=3.5.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
+Requires-Dist: ruff>=0.1.0; extra == "dev"
+Requires-Dist: mypy>=1.0.0; extra == "dev"
+
+# shreg - Shape Regularization
+
+A Python implementation of CGAL Shape Regularization algorithms for regularizing line segments and contours.
