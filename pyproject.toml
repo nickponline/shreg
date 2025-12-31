@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Nick P" },
+    { name = "Nicholas Pilkington" },
 ]
 keywords = [
     "shape-regularization",
@@ -50,10 +50,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/nickp/shreg"
-Documentation = "https://github.com/nickp/shreg#readme"
-Repository = "https://github.com/nickp/shreg"
-Issues = "https://github.com/nickp/shreg/issues"
+Homepage = "https://github.com/nickponline/shreg"
+Documentation = "https://github.com/nickponline/shreg#readme"
+Repository = "https://github.com/nickponline/shreg"
+Issues = "https://github.com/nickponline/shreg/issues"
 
 [project.scripts]
 shreg = "shreg.__main__:main"
