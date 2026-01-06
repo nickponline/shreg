@@ -98,7 +98,29 @@ Angle regularization aligns crossing lines to common orientations:
 
 Combined angle and offset regularization on a hexagon:
 
-![Hexagon Regularization](docs/images/segment_hexagon.png)
+![Segment Regularization](docs/images/segment_hexagon.png)
+
+#### Angle + Offset Regularization with Groups
+
+This example from the [CGAL documentation](https://doc.cgal.org/latest/Shape_regularization/index.html#title10) demonstrates sequential angle and offset regularization on 15 segments organized into three groups: outer boundary, top rhombus, and bottom rhombus.
+
+```python
+from shreg import solve_line_segments, create_cgal_example
+
+# Load the 15 segments from the CGAL example
+segments, groups = create_cgal_example()
+
+# Regularize with tight tolerances
+result = solve_line_segments(
+    segments,
+    angle=True,
+    offset=True,
+    maximum_angle=10,    # 10 degrees max angle deviation
+    maximum_offset=0.1   # 0.1 units max offset
+)
+```
+
+![CGAL 2.4 Angle + Offset Regularization](docs/images/segment_cgal_example.png)
 
 ### Contour Regularization
 

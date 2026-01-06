@@ -8,6 +8,7 @@ from shreg import (
     regularize_contour,
     process_real,
     create_example_angles,
+    create_cgal_example,
     seg,
     plotting,
 )
@@ -54,7 +55,17 @@ def main():
     plotting.comparison(before, after, title="Hexagon - Combined Regularization",
                         show=False, save_path="docs/images/segment_hexagon.png")
 
-    # 4. Contour regularization - Simple polygon
+    # 4. CGAL 2.4 Angle + Offset Regularization example
+    print("  Generating segment_cgal_example.png...")
+    segments, _groups = create_cgal_example()
+    before = [s.copy() for s in segments]
+    after = solve_line_segments(
+        segments, offset=True, angle=True, maximum_offset=0.1, maximum_angle=10
+    )
+    plotting.comparison(before, after, title="CGAL 2.4 - Angle + Offset Regularization",
+                        show=False, save_path="docs/images/segment_cgal_example.png")
+
+    # 5. Contour regularization - Simple polygon
     print("  Generating contour_simple.png...")
     points = [
         [45, 29], [65, 440], [44, 498], [446, 498], [429, 325],
@@ -70,7 +81,7 @@ def main():
         save_path="docs/images/contour_simple.png"
     )
 
-    # 5. Contour regularization - Rectangle-like shape
+    # 6. Contour regularization - Rectangle-like shape
     print("  Generating contour_rectangle.png...")
     points = [
         [101, 372], [101, 344], [97, 280], [114, 229], [112, 192],
