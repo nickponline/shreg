@@ -445,6 +445,498 @@ def solve_line_segments(
     return segments
 
 
+def find_endpoint_clusters(
+    segments: List[Segment],
+    epsilon: float = 1.0,
+) -> List[List[tuple[int, int]]]:
+    """Find clusters of nearby endpoints using spatial indexing.
+
+    Uses a KD-Tree to efficiently find endpoints within epsilon distance of each other,
+    then groups them into clusters using union-find.
+
+    Args:
+        segments: List of segments, each with shape (4,): [x1, y1, x2, y2]
+        epsilon: Maximum distance for endpoints to be considered "close"
+
+    Returns:
+        List of clusters, where each cluster is a list of (segment_idx, endpoint_idx) tuples.
+        endpoint_idx is 0 for the first endpoint (x1, y1) and 1 for the second (x2, y2).
+    """
+    from scipy.spatial import KDTree
+
+    # Extract all endpoints: [(segment_idx, endpoint_idx, x, y), ...]
+    endpoints = []
+    coords = []
+    for i, seg in enumerate(segments):
+        endpoints.append((i, 0))  # First endpoint
+        coords.append([seg[0], seg[1]])
+        endpoints.append((i, 1))  # Second endpoint
+        coords.append([seg[2], seg[3]])
+
+    coords = np.array(coords)
+    n_endpoints = len(endpoints)
+
+    # Build KD-Tree and find pairs within epsilon
+    tree = KDTree(coords)
+    pairs = tree.query_pairs(epsilon)
+
+    # Union-Find to group endpoints into clusters
+    parent = list(range(n_endpoints))
+
+    def find(x):
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+
+    def union(x, y):
+        px, py = find(x), find(y)
+        if px != py:
+            parent[px] = py
+
+    for i, j in pairs:
+        union(i, j)
+
+    # Group endpoints by their root
+    from collections import defaultdict
+    clusters_dict = defaultdict(list)
+    for idx in range(n_endpoints):
+        root = find(idx)
+        clusters_dict[root].append(endpoints[idx])
+
+    # Filter to clusters with more than one endpoint
+    clusters = [c for c in clusters_dict.values() if len(c) > 1]
+
+    return clusters
+
+
+def find_t_junctions(
+    segments: List[Segment],
+    epsilon: float = 1.0,
+    exclude_clusters: List[List[tuple[int, int]]] | None = None,
+) -> List[tuple[tuple[int, int], int]]:
+    """Find T-junctions where an endpoint is close to another segment's interior.
+
+    Args:
+        segments: List of segments
+        epsilon: Maximum distance for endpoint to segment
+        exclude_clusters: Endpoint clusters to exclude (already snapped endpoint-to-endpoint)
+
+    Returns:
+        List of (endpoint, segment_idx) tuples where endpoint = (seg_idx, endpoint_idx)
+        and segment_idx is the segment the endpoint should snap onto.
+    """
+    # Build set of clustered endpoints to exclude
+    clustered = set()
+    if exclude_clusters:
+        for cluster in exclude_clusters:
+            for ep in cluster:
+                clustered.add(ep)
+
+    t_junctions = []
+    n = len(segments)
+
+    for i, seg in enumerate(segments):
+        for ep_idx in [0, 1]:
+            if (i, ep_idx) in clustered:
+                continue
+
+            # Get endpoint coordinates
+            if ep_idx == 0:
+                px, py = seg[0], seg[1]
+            else:
+                px, py = seg[2], seg[3]
+            point = np.array([[px, py]])
+
+            # Check distance to all other segments
+            for j in range(n):
+                if i == j:
+                    continue
+
+                dist = geometry.distance_segment_to_points(segments[j], point)
+                if dist < epsilon:
+                    # Check it's not near the endpoints of segment j
+                    x1, y1, x2, y2 = segments[j]
+                    dist_to_ep1 = np.sqrt((px - x1)**2 + (py - y1)**2)
+                    dist_to_ep2 = np.sqrt((px - x2)**2 + (py - y2)**2)
+
+                    # Only consider it a T-junction if not close to endpoints
+                    if dist_to_ep1 > epsilon and dist_to_ep2 > epsilon:
+                        t_junctions.append(((i, ep_idx), j))
+                        break  # One T-junction per endpoint
+
+    return t_junctions
+
+
+def snap_regularize_segments(
+    segments: List[Segment],
+    epsilon: float = 1.0,
+    method: str = "hard",
+    soft_weight: float = 100.0,
+    t_junctions: bool = False,
+    debug: bool = False,
+) -> List[Segment]:
+    """Regularize segments by snapping nearby endpoints together.
+
+    This implements Snap (Connectivity) regularization as a Quadratic Programming problem.
+    Endpoints within epsilon distance are clustered and forced to coincide, minimizing
+    total endpoint movement while satisfying connectivity constraints.
+
+    Args:
+        segments: List of segments to regularize
+        epsilon: Maximum distance for endpoints to be considered "close" and snapped
+        method: "hard" for exact equality constraints (Method A - perfectly watertight),
+               "soft" for penalty-based constraints (Method B - elastic connections),
+               "cluster" for cluster-then-solve approach (fastest, guaranteed watertight)
+        soft_weight: Weight (lambda) for soft constraints. Higher = stiffer snap.
+        t_junctions: If True, also detect and snap T-junctions (endpoints onto segments)
+        debug: If True, print debug information
+
+    Returns:
+        List of regularized segments with snapped endpoints
+
+    Reference:
+        The formulation minimizes (1/2)||x - x_hat||^2 subject to snap constraints,
+        where x contains all endpoint coordinates and x_hat are the original positions.
+    """
+    if len(segments) < 2:
+        return segments
+
+    # Convert to numpy arrays if needed
+    segments = [
+        np.array(s, dtype=np.float64) if not isinstance(s, np.ndarray) else s.astype(np.float64)
+        for s in segments
+    ]
+
+    # Find endpoint clusters
+    clusters = find_endpoint_clusters(segments, epsilon)
+
+    if debug:
+        log.info(f"Found {len(clusters)} endpoint clusters")
+        for i, cluster in enumerate(clusters):
+            log.info(f"  Cluster {i}: {cluster}")
+
+    # Find T-junctions if requested
+    tjunc_list = []
+    if t_junctions:
+        tjunc_list = find_t_junctions(segments, epsilon, exclude_clusters=clusters)
+        if debug:
+            log.info(f"Found {len(tjunc_list)} T-junctions")
+
+    if not clusters and not tjunc_list:
+        if debug:
+            log.info("No endpoints to snap")
+        return segments
+
+    # Choose solving method
+    if method == "cluster":
+        return _solve_snap_cluster(segments, clusters, tjunc_list, debug)
+    elif method == "hard":
+        return _solve_snap_hard(segments, clusters, tjunc_list, debug)
+    elif method == "soft":
+        return _solve_snap_soft(segments, clusters, tjunc_list, soft_weight, debug)
+    else:
+        raise ValueError(f"Unknown method: {method}. Use 'hard', 'soft', or 'cluster'.")
+
+
+def _solve_snap_cluster(
+    segments: List[Segment],
+    clusters: List[List[tuple[int, int]]],
+    t_junctions: List[tuple[tuple[int, int], int]],
+    debug: bool = False,
+) -> List[Segment]:
+    """Solve snap regularization using cluster-then-solve approach.
+
+    This is the most efficient method. Instead of using constraints, we:
+    1. Replace clustered endpoints with a single "cluster variable"
+    2. Solve unconstrained optimization on the reduced variable set
+    3. The optimal position for each cluster is simply the centroid
+
+    This guarantees mathematically watertight results without Lagrange multipliers.
+    """
+    n = len(segments)
+    result = [seg.copy() for seg in segments]
+
+    # For each cluster, compute centroid and assign to all endpoints in cluster
+    for cluster in clusters:
+        # Compute centroid of all endpoints in cluster
+        coords = []
+        for seg_idx, ep_idx in cluster:
+            if ep_idx == 0:
+                coords.append([segments[seg_idx][0], segments[seg_idx][1]])
+            else:
+                coords.append([segments[seg_idx][2], segments[seg_idx][3]])
+
+        centroid = np.mean(coords, axis=0)
+
+        if debug:
+            log.info(f"Cluster centroid: {centroid}")
+
+        # Assign centroid to all endpoints in cluster
+        for seg_idx, ep_idx in cluster:
+            if ep_idx == 0:
+                result[seg_idx][0] = centroid[0]
+                result[seg_idx][1] = centroid[1]
+            else:
+                result[seg_idx][2] = centroid[0]
+                result[seg_idx][3] = centroid[1]
+
+    # Handle T-junctions: project endpoint onto target segment
+    for (seg_idx, ep_idx), target_seg_idx in t_junctions:
+        if ep_idx == 0:
+            point = np.array([[result[seg_idx][0], result[seg_idx][1]]])
+        else:
+            point = np.array([[result[seg_idx][2], result[seg_idx][3]]])
+
+        # Project onto target segment
+        proj_x, proj_y = geometry.distance_segment_to_points(
+            result[target_seg_idx], point, return_xy=True
+        )
+
+        if ep_idx == 0:
+            result[seg_idx][0] = proj_x
+            result[seg_idx][1] = proj_y
+        else:
+            result[seg_idx][2] = proj_x
+            result[seg_idx][3] = proj_y
+
+    return result
+
+
+def _solve_snap_hard(
+    segments: List[Segment],
+    clusters: List[List[tuple[int, int]]],
+    t_junctions: List[tuple[tuple[int, int], int]],
+    debug: bool = False,
+) -> List[Segment]:
+    """Solve snap regularization with hard equality constraints (Method A).
+
+    Formulation:
+        minimize    (1/2) x'Hx + f'x
+        subject to  A_eq @ x = b_eq
+
+    Where:
+        - x = [x11, y11, x12, y12, ..., xN2, yN2]' (all 4N coordinates)
+        - H = I (identity matrix for equal weight on all points)
+        - f = -x_hat (negative of original coordinates)
+        - A_eq encodes equality constraints: v_i - u_j = 0 for snapped endpoints
+    """
+    n = len(segments)
+    num_vars = 4 * n  # 4 coordinates per segment
+
+    # Build original coordinate vector x_hat
+    x_hat = np.zeros(num_vars)
+    for i, seg in enumerate(segments):
+        x_hat[4*i:4*i+4] = seg
+
+    # Build equality constraints for clusters
+    # For cluster with endpoints [(i1, e1), (i2, e2), ...]:
+    # All must equal each other, so we use constraints:
+    # endpoint[0] - endpoint[1] = 0
+    # endpoint[0] - endpoint[2] = 0
+    # etc.
+
+    eq_rows = []
+    for cluster in clusters:
+        if len(cluster) < 2:
+            continue
+
+        # Use first endpoint as reference
+        ref_seg, ref_ep = cluster[0]
+        ref_x_idx = 4 * ref_seg + (0 if ref_ep == 0 else 2)
+        ref_y_idx = ref_x_idx + 1
+
+        # Constrain all other endpoints to equal the reference
+        for seg_idx, ep_idx in cluster[1:]:
+            x_idx = 4 * seg_idx + (0 if ep_idx == 0 else 2)
+            y_idx = x_idx + 1
+
+            # x constraint: ref_x - this_x = 0
+            row_x = np.zeros(num_vars)
+            row_x[ref_x_idx] = 1
+            row_x[x_idx] = -1
+            eq_rows.append(row_x)
+
+            # y constraint: ref_y - this_y = 0
+            row_y = np.zeros(num_vars)
+            row_y[ref_y_idx] = 1
+            row_y[y_idx] = -1
+            eq_rows.append(row_y)
+
+    # Note: T-junctions with hard constraints are more complex (collinearity is quadratic)
+    # For simplicity, we handle them approximately after the main solve
+    # A full implementation would linearize the collinearity constraint
+
+    if not eq_rows:
+        # No constraints, just return original segments
+        return [seg.copy() for seg in segments]
+
+    A_eq = np.array(eq_rows)
+    b_eq = np.zeros(len(eq_rows))
+
+    # Solve using OSQP with equality constraints
+    # OSQP handles equality as: l <= Ax <= u with l = u
+    H = sparse.eye(num_vars, format='csc')
+    f = -x_hat
+
+    # Add box constraints (no bounds, but OSQP needs them)
+    # Full constraint matrix: [A_eq; I]
+    # Bounds: equality rows have l=u=0, identity rows have large bounds
+    A_full = sparse.vstack([
+        sparse.csc_matrix(A_eq),
+        sparse.eye(num_vars)
+    ], format='csc')
+
+    l_full = np.concatenate([b_eq, np.full(num_vars, -1e12)])
+    u_full = np.concatenate([b_eq, np.full(num_vars, 1e12)])
+
+    prob = osqp.OSQP()
+    try:
+        prob.setup(H, f, A_full, l_full, u_full, eps_abs=1e-08, eps_rel=1e-08, verbose=False)
+        res = prob.solve()
+        x_opt = res.x
+    except Exception as ex:
+        log.info(f"Snap optimization failed: {ex}")
+        return [seg.copy() for seg in segments]
+
+    if debug:
+        log.info(f"Snap solution status: {res.info.status}")
+
+    # Reconstruct segments from solution
+    result = []
+    for i in range(n):
+        result.append(np.array(x_opt[4*i:4*i+4], dtype=np.float64))
+
+    # Handle T-junctions by projection (approximate)
+    for (seg_idx, ep_idx), target_seg_idx in t_junctions:
+        if ep_idx == 0:
+            point = np.array([[result[seg_idx][0], result[seg_idx][1]]])
+        else:
+            point = np.array([[result[seg_idx][2], result[seg_idx][3]]])
+
+        proj_x, proj_y = geometry.distance_segment_to_points(
+            result[target_seg_idx], point, return_xy=True
+        )
+
+        if ep_idx == 0:
+            result[seg_idx][0] = proj_x
+            result[seg_idx][1] = proj_y
+        else:
+            result[seg_idx][2] = proj_x
+            result[seg_idx][3] = proj_y
+
+    return result
+
+
+def _solve_snap_soft(
+    segments: List[Segment],
+    clusters: List[List[tuple[int, int]]],
+    t_junctions: List[tuple[tuple[int, int], int]],
+    soft_weight: float = 100.0,
+    debug: bool = False,
+) -> List[Segment]:
+    """Solve snap regularization with soft penalty constraints (Method B).
+
+    Formulation:
+        minimize    (1/2) x'Hx + f'x
+
+    Where the objective combines:
+        - Fidelity: (1/2) sum_i ||p_i - p_hat_i||^2
+        - Snap penalty: (lambda/2) sum_{(i,j) in pairs} ||v_i - u_j||^2
+
+    This creates "spring" forces between endpoints that should connect.
+    Higher lambda = stiffer springs = closer to hard constraints.
+    """
+    n = len(segments)
+    num_vars = 4 * n
+
+    # Build original coordinate vector
+    x_hat = np.zeros(num_vars)
+    for i, seg in enumerate(segments):
+        x_hat[4*i:4*i+4] = seg
+
+    # Build H matrix
+    # H = I + lambda * (sum over pairs of: difference matrices)
+    # For a pair (v_i, u_j), the penalty ||v_i - u_j||^2 adds to H:
+    #   +lambda at (v_i_x, v_i_x), (v_i_y, v_i_y), (u_j_x, u_j_x), (u_j_y, u_j_y)
+    #   -lambda at (v_i_x, u_j_x), (u_j_x, v_i_x), (v_i_y, u_j_y), (u_j_y, v_i_y)
+
+    H = np.eye(num_vars)
+
+    for cluster in clusters:
+        # Add springs between all pairs in cluster
+        for idx1, (seg1, ep1) in enumerate(cluster):
+            for seg2, ep2 in cluster[idx1+1:]:
+                x1_idx = 4 * seg1 + (0 if ep1 == 0 else 2)
+                y1_idx = x1_idx + 1
+                x2_idx = 4 * seg2 + (0 if ep2 == 0 else 2)
+                y2_idx = x2_idx + 1
+
+                # Add spring terms
+                H[x1_idx, x1_idx] += soft_weight
+                H[y1_idx, y1_idx] += soft_weight
+                H[x2_idx, x2_idx] += soft_weight
+                H[y2_idx, y2_idx] += soft_weight
+                H[x1_idx, x2_idx] -= soft_weight
+                H[x2_idx, x1_idx] -= soft_weight
+                H[y1_idx, y2_idx] -= soft_weight
+                H[y2_idx, y1_idx] -= soft_weight
+
+    # Add T-junction springs (endpoint to projected point on segment)
+    # This is an approximation - we use the current projection point
+    for (seg_idx, ep_idx), target_seg_idx in t_junctions:
+        if ep_idx == 0:
+            point = np.array([[segments[seg_idx][0], segments[seg_idx][1]]])
+        else:
+            point = np.array([[segments[seg_idx][2], segments[seg_idx][3]]])
+
+        # Get projection point (fixed for linearization)
+        proj_x, proj_y = geometry.distance_segment_to_points(
+            segments[target_seg_idx], point, return_xy=True
+        )
+
+        # This adds a spring from the endpoint to a fixed projection point
+        # which is an approximation of the true sliding constraint
+        x_idx = 4 * seg_idx + (0 if ep_idx == 0 else 2)
+        y_idx = x_idx + 1
+
+        # Add to diagonal (endpoint is pulled toward projection)
+        H[x_idx, x_idx] += soft_weight
+        H[y_idx, y_idx] += soft_weight
+
+        # Adjust linear term to pull toward projection point
+        # The penalty lambda * ||p - proj||^2 = lambda * (p'p - 2*p'*proj + proj'*proj)
+        # Linear term contribution: -lambda * proj
+        x_hat[x_idx] += soft_weight * proj_x
+        x_hat[y_idx] += soft_weight * proj_y
+
+    H = sparse.csc_matrix(H)
+    f = -x_hat
+
+    # No inequality constraints, just solve unconstrained QP
+    A = sparse.eye(num_vars, format='csc')
+    l = np.full(num_vars, -1e12)
+    u = np.full(num_vars, 1e12)
+
+    prob = osqp.OSQP()
+    try:
+        prob.setup(H, f, A, l, u, eps_abs=1e-08, eps_rel=1e-08, verbose=False)
+        res = prob.solve()
+        x_opt = res.x
+    except Exception as ex:
+        log.info(f"Snap optimization failed: {ex}")
+        return [seg.copy() for seg in segments]
+
+    if debug:
+        log.info(f"Snap solution status: {res.info.status}")
+
+    # Reconstruct segments
+    result = []
+    for i in range(n):
+        result.append(np.array(x_opt[4*i:4*i+4], dtype=np.float64))
+
+    return result
+
+
 def fit_line_segment(points: np.ndarray) -> tuple[float, float, float, float]:
     """Fit a line segment to set of 2d points and return x1, y1, x2, y2."""
     x = points[:, 0]

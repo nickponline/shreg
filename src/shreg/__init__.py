@@ -12,6 +12,9 @@ __version__ = "0.1.0"
 # Core segment regularization
 from .segments_reg import (
     solve_line_segments,
+    snap_regularize_segments,
+    find_endpoint_clusters,
+    find_t_junctions,
     create_cgal_example,
     create_example_angles,
     create_example_offsets,
@@ -51,6 +54,9 @@ __all__ = [
     "__version__",
     # Segment regularization
     "solve_line_segments",
+    "snap_regularize_segments",
+    "find_endpoint_clusters",
+    "find_t_junctions",
     "create_cgal_example",
     "create_example_angles",
     "create_example_offsets",

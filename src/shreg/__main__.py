@@ -17,6 +17,7 @@ from .segments_reg import (
     create_example_offsets,
     process_real,
     seg,
+    snap_regularize_segments,
     solve_line_segments,
 )
 
@@ -121,6 +122,55 @@ def run_segment_examples() -> None:
         )
         plot.after(segments)
     print(f"    Regularized {len(segments)} segments")
+
+    # Example 8: Snap regularization (endpoint connectivity)
+    print("\n[8] Snap Regularization (polygon with gaps)")
+    with plotting.BeforeAfter("Snap: Polygon") as plot:
+        # A square-ish polygon with small gaps at corners
+        segments = [
+            seg(0.0, 0.0, 1.0, 0.05),    # bottom edge (slightly tilted)
+            seg(1.02, 0.0, 1.0, 1.0),    # right edge (gap at bottom-right)
+            seg(1.0, 1.02, 0.0, 0.98),   # top edge (gap at top-right)
+            seg(-0.02, 1.0, 0.0, 0.0),   # left edge (gap at top-left, connected at origin)
+        ]
+        plot.before(segments)
+        segments = snap_regularize_segments(
+            segments, epsilon=0.1, method="cluster"
+        )
+        plot.after(segments)
+    print(f"    Regularized {len(segments)} segments (gaps closed)")
+
+    # Example 9: Snap with T-junctions
+    print("\n[9] Snap Regularization with T-junctions")
+    with plotting.BeforeAfter("Snap: T-junctions") as plot:
+        # Two horizontal lines and one vertical line forming T-junctions
+        segments = [
+            seg(0.0, 0.0, 2.0, 0.0),     # bottom horizontal
+            seg(0.0, 1.0, 2.0, 1.0),     # top horizontal
+            seg(0.98, -0.03, 1.02, 1.05),  # vertical line (slightly off)
+        ]
+        plot.before(segments)
+        segments = snap_regularize_segments(
+            segments, epsilon=0.1, method="cluster", t_junctions=True
+        )
+        plot.after(segments)
+    print(f"    Regularized {len(segments)} segments (T-junctions snapped)")
+
+    # Example 10: Snap with soft constraints
+    print("\n[10] Snap Regularization (soft vs hard constraints)")
+    with plotting.BeforeAfter("Snap: Soft Constraints") as plot:
+        # Triangle with larger gaps - soft constraints pull but don't force exact match
+        segments = [
+            seg(0.0, 0.0, 1.0, 0.0),
+            seg(1.1, 0.05, 0.55, 0.9),   # gap at bottom-right corner
+            seg(0.5, 0.95, -0.05, 0.05),  # gap at top and bottom-left
+        ]
+        plot.before(segments)
+        segments = snap_regularize_segments(
+            segments, epsilon=0.2, method="soft", soft_weight=50.0
+        )
+        plot.after(segments)
+    print(f"    Regularized {len(segments)} segments (soft springs)")
 
 
 def run_contour_examples() -> None:
