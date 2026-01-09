@@ -653,6 +653,12 @@ Run tests:
 pytest tests/ -v
 ```
 
+Run tests with coverage:
+
+```bash
+pytest tests/ -v --cov=shreg --cov-report=term-missing
+```
+
 ## References
 
 - Jean-Philippe Bauchet and Florent Lafarge. **KIPPI: KInetic Polygonal Partitioning of Images**. In *IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, pages 3146–3154, Salt Lake City, United States, June 2018. [[PDF](https://hal.inria.fr/hal-01741686/document)]

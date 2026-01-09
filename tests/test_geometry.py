@@ -219,3 +219,275 @@ class TestDirection:
         segment = np.array([0, 0, -1, -1])
         d = geometry.direction(segment)
         assert d[1] >= 0 or (d[1] == 0 and d[0] >= 0)
+
+
+class TestPointSideOfLine:
+    def test_point_below_line(self):
+        # For a line going left to right, point below has negative cross product
+        result = geometry.point_side_of_line(0, 0, 1, 0, 0.5, -1)
+        assert result == -1
+
+    def test_point_above_line(self):
+        # For a line going left to right, point above has positive cross product
+        result = geometry.point_side_of_line(0, 0, 1, 0, 0.5, 1)
+        assert result == 1
+
+    def test_point_on_line(self):
+        result = geometry.point_side_of_line(0, 0, 1, 0, 0.5, 0)
+        assert result == 0
+
+
+class TestIsClockwise:
+    def test_clockwise(self):
+        a = (0, 0)
+        b = (1, 0)
+        c = (1, -1)
+        assert geometry.is_clockwise(a, b, c) is True
+
+    def test_counter_clockwise(self):
+        a = (0, 0)
+        b = (1, 0)
+        c = (1, 1)
+        assert geometry.is_clockwise(a, b, c) is False
+
+    def test_collinear(self):
+        a = (0, 0)
+        b = (1, 0)
+        c = (2, 0)
+        assert geometry.is_clockwise(a, b, c) is None
+
+
+class TestStandardize:
+    def test_standardize_list_of_segments(self):
+        segments = [[1, 2, 0, 1], [0, 0, 1, 1]]
+        result = geometry.standardize(segments)
+        assert result[0] == [0, 1, 1, 2]
+        assert result[1] == [0, 0, 1, 1]
+
+
+class TestConvertAngle2:
+    def test_angle_over_90(self):
+        result = geometry.convert_angle_2(120)
+        assert result == 60
+
+    def test_angle_under_minus_90(self):
+        result = geometry.convert_angle_2(-120)
+        assert result == 60
+
+    def test_angle_in_range(self):
+        result = geometry.convert_angle_2(45)
+        assert result == 45
+
+
+class TestIsOrthogonal:
+    def test_orthogonal_lines(self):
+        line1 = np.array([0, 0, 1, 0])
+        line2 = np.array([0, 0, 0, 1])
+        assert geometry.is_orthogonal(line1, line2) is True
+
+    def test_parallel_lines(self):
+        line1 = np.array([0, 0, 1, 0])
+        line2 = np.array([0, 1, 1, 1])
+        assert geometry.is_orthogonal(line1, line2) is False
+
+
+class TestAngleBetweenVectors:
+    def test_perpendicular_vectors(self):
+        a = np.array([1, 0])
+        b = np.array([0, 1])
+        result = geometry.angle_between_vectors(a, b)
+        assert np.isclose(abs(result), 90, atol=0.01)
+
+    def test_parallel_vectors(self):
+        a = np.array([1, 0])
+        b = np.array([2, 0])
+        result = geometry.angle_between_vectors(a, b)
+        assert np.isclose(result, 0, atol=0.01)
+
+
+class TestDistanceAlong:
+    def test_midpoint(self):
+        line = (0, 0, 2, 0)
+        points = np.array([[1, 0]])
+        result = geometry.distance_along(line, points)
+        assert np.isclose(result[0], 0.5)
+
+    def test_start_point(self):
+        line = (0, 0, 2, 0)
+        points = np.array([[0, 0]])
+        result = geometry.distance_along(line, points)
+        assert np.isclose(result[0], 0.0)
+
+    def test_vertical_line(self):
+        line = (0, 0, 0, 2)
+        points = np.array([[0, 1]])
+        result = geometry.distance_along(line, points)
+        assert np.isclose(result[0], 0.5)
+
+    def test_no_clip(self):
+        line = (0, 0, 2, 0)
+        points = np.array([[3, 0]])  # Beyond endpoint
+        result = geometry.distance_along(line, points, clip=False)
+        assert result[0] > 1.0
+
+
+class TestProjectPointsToLine:
+    def test_project_on_line(self):
+        points = np.array([[0.5, 1]])
+        line = (0, 0, 1, 0)
+        result = geometry.project_points_to_line(points, line)
+        assert np.allclose(result, [[0.5, 0]])
+
+
+class TestDistanceSegmentToPointsReturnXY:
+    def test_return_projection_in_middle(self):
+        segment = (0, 0, 2, 0)
+        xy = np.array([[1, 1]])
+        px, py = geometry.distance_segment_to_points(segment, xy, return_xy=True)
+        assert np.isclose(px, 1.0)
+        assert np.isclose(py, 0.0)
+
+    def test_return_projection_before_start(self):
+        segment = (0, 0, 2, 0)
+        xy = np.array([[-1, 0]])
+        px, py = geometry.distance_segment_to_points(segment, xy, return_xy=True)
+        assert np.isclose(px, 0.0)
+        assert np.isclose(py, 0.0)
+
+    def test_return_projection_after_end(self):
+        segment = (0, 0, 2, 0)
+        xy = np.array([[3, 0]])
+        px, py = geometry.distance_segment_to_points(segment, xy, return_xy=True)
+        assert np.isclose(px, 2.0)
+        assert np.isclose(py, 0.0)
+
+
+class TestAffine:
+    def test_basic_transform(self):
+        points = np.array([[2, 4], [6, 8]])
+        translation = np.array([1, 1])
+        scale = 2
+        result = geometry.affine(points, translation, scale)
+        expected = np.array([[0, 2], [2, 4]])
+        assert np.allclose(result, expected)
+
+
+class TestWhichSide:
+    def test_normal_to_left(self):
+        segment = (0, 0, 1, 0)
+        normal = np.array([0, 1])
+        result = geometry.which_side(segment, normal)
+        assert result != 0
+
+
+class TestLineSegmentIntersection:
+    def test_intersecting_segments(self):
+        line1 = (0, 0, 2, 2)
+        line2 = (0, 2, 2, 0)
+        result = geometry.line_segment_intersection(line1, line2)
+        assert result is not None
+        assert np.isclose(result[0], 1.0)
+        assert np.isclose(result[1], 1.0)
+
+    def test_parallel_segments(self):
+        line1 = (0, 0, 1, 0)
+        line2 = (0, 1, 1, 1)
+        result = geometry.line_segment_intersection(line1, line2)
+        assert result is None
+
+    def test_non_intersecting_segments(self):
+        line1 = (0, 0, 1, 0)
+        line2 = (2, 2, 3, 3)
+        result = geometry.line_segment_intersection(line1, line2)
+        assert result is None
+
+    def test_return_ts(self):
+        line1 = (0, 0, 2, 2)
+        line2 = (0, 2, 2, 0)
+        result = geometry.line_segment_intersection(line1, line2, return_ts=True)
+        assert result is not None
+        t, s = result
+        assert np.isclose(t, 0.5)
+        assert np.isclose(s, 0.5)
+
+    def test_ignore_extent(self):
+        line1 = (0, 0, 1, 0)
+        line2 = (2, -1, 2, 1)
+        result = geometry.line_segment_intersection(line1, line2, ignore_extent=True)
+        assert result is not None
+
+
+class TestIntersectionEars:
+    def test_basic(self):
+        line1 = (0, 0, 2, 0)
+        line2 = (1, -1, 1, 1)
+        xy = (1, 0)
+        result = geometry.intersection_ears(line1, line2, xy)
+        assert len(result) == 4
+
+
+class TestFlatten:
+    def test_flatten(self):
+        nested = [[1, 2], [3, 4], [5]]
+        result = geometry.flatten(nested)
+        assert result == [1, 2, 3, 4, 5]
+
+
+class TestGroupSegments:
+    def test_group_parallel_segments(self):
+        segments = [
+            np.array([0, 0, 1, 0]),
+            np.array([0, 0.1, 1, 0.1]),
+            np.array([5, 5, 6, 5]),  # Same orientation, far away
+        ]
+        result = geometry.group_segments(segments, max_orientation=5.0, max_distance=1.0)
+        assert len(result) == 3
+        # First two should be same group
+        assert result[0] == result[1]
+
+    def test_group_collate(self):
+        segments = [
+            np.array([0, 0, 1, 0]),
+            np.array([0, 0.1, 1, 0.1]),
+        ]
+        result = geometry.group_segments(segments, max_orientation=5.0, max_distance=1.0, collate=True)
+        assert isinstance(result, dict)
+
+
+class TestWeldSegmentsGroup:
+    def test_overlapping_segments(self):
+        segments = [[0, 0, 2, 0], [1, 0, 3, 0]]
+        result = geometry.weld_segments_group(segments)
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert result[0][2] == 3
+
+
+class TestWeldSegments:
+    def test_weld_close_segments(self):
+        segments = [
+            [0, 0, 1, 0],
+            [0.5, 0, 1.5, 0],
+        ]
+        result = geometry.weld_segments(segments, max_orientation=5.0, max_distance=1.0)
+        assert len(result) >= 1
+
+
+class TestFindCrossing:
+    def test_find_crossings(self):
+        segments = [
+            [0, 0, 2, 0],
+            [1, -1, 1, 1],
+        ]
+        result = geometry.find_crossing(segments, 0)
+        assert len(result) >= 2  # At least start and end
+
+
+class TestClipAndClose:
+    def test_basic(self):
+        segments = [
+            [0, 0, 2, 0],
+            [0, 1, 2, 1],
+        ]
+        result = geometry.clip_and_close(segments, cut_length=0.1)
+        assert len(result) >= 0
