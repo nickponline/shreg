@@ -8,6 +8,7 @@ Shape regularization is a technique used in computational geometry to clean up n
 
 - **Segment Regularization**: Align line segments to common angles and offsets using quadratic programming optimization
 - **Snap Regularization**: Connect nearby endpoints to create watertight polygons and meshes
+- **Metric Regularization**: Constrain segment dimensions - equal lengths, length quantization, and equal spacing
 - **Contour Regularization**: Simplify closed polygons by aligning edges to principal directions
 - **T-Junction Detection**: Snap endpoints onto segment interiors for proper connectivity
 - **Flexible Configuration**: Control maximum angle and offset tolerances
@@ -85,6 +86,31 @@ result = snap_regularize_segments(
     method="cluster"  # Fast centroid-based method
 )
 # Result: All corners are now perfectly connected
+```
+
+### Metric Regularization
+
+Constrain segment dimensions - force equal lengths, quantize to grid units, or equalize spacing:
+
+```python
+from shreg import metric_regularize_segments, seg
+
+# Segments with slightly different lengths and uneven spacing
+segments = [
+    seg(0.0, 0.0, 1.9, 0.0),   # length ~2
+    seg(0.0, 0.9, 2.1, 0.9),   # length ~2, y=0.9 (should be 1.0)
+    seg(0.0, 2.0, 1.95, 2.0),  # length ~2
+]
+
+# Regularize: equal lengths, snap to 1-unit grid, equalize spacing
+result = metric_regularize_segments(
+    segments,
+    equal_length=True,         # Force similar lengths to be equal
+    length_quantization=True,  # Snap lengths to multiples of base_unit
+    equal_spacing=True,        # Equalize gaps between parallel lines
+    base_unit=1.0,             # Grid unit for quantization
+)
+# Result: All segments have length 2.0 and are evenly spaced at y=0, 1, 2
 ```
 
 ### Contour Regularization
@@ -218,6 +244,79 @@ Snap regularization works on polygons of any complexity:
 
 ![Snap Regularization - Complex Polygon](docs/images/snap_complex.png)
 
+### Metric & Pattern Regularization
+
+Metric regularization constrains the relative measurements of segments. This is useful for architectural drawings, CAD cleanup, and any domain where dimensions should follow regular patterns.
+
+#### Equal Length
+
+Forces segments with similar lengths to be exactly equal. Useful when objects (like windows or columns) should have identical dimensions:
+
+```python
+from shreg import metric_regularize_segments, seg
+
+segments = [
+    seg(0.0, 0.0, 2.0, 0.0),    # length 2.0
+    seg(0.0, 1.0, 2.15, 1.0),   # length 2.15
+    seg(0.0, 2.0, 1.9, 2.0),    # length 1.9
+    seg(0.0, 3.0, 2.05, 3.0),   # length 2.05
+]
+
+result = metric_regularize_segments(
+    segments,
+    equal_length=True,
+    length_tolerance=0.15,  # 15% relative tolerance
+)
+# Result: All segments now have equal length (~2.0)
+```
+
+![Equal Length Regularization](docs/images/metric_equal_length.png)
+
+#### Length Quantization
+
+Snaps segment lengths to integer multiples of a base unit. Essential for architectural plans where walls must be multiples of a grid unit:
+
+```python
+segments = [
+    seg(0.0, 0.0, 1.85, 0.0),   # length 1.85 -> 2.0
+    seg(0.0, 1.0, 3.15, 1.0),   # length 3.15 -> 3.0
+    seg(0.0, 2.0, 0.9, 2.0),    # length 0.9 -> 1.0
+    seg(0.0, 3.0, 2.2, 3.0),    # length 2.2 -> 2.0
+]
+
+result = metric_regularize_segments(
+    segments,
+    length_quantization=True,
+    base_unit=1.0,              # Snap to 1-meter multiples
+    quantization_tolerance=0.3, # Within 30% of base unit
+)
+```
+
+![Length Quantization](docs/images/metric_quantization.png)
+
+#### Equal Spacing
+
+Forces equal gaps between parallel lines. Perfect for regularizing staircases, window arrays, or any repeated elements:
+
+```python
+segments = [
+    seg(0.0, 0.0, 3.0, 0.0),    # y=0.0
+    seg(0.0, 0.9, 3.0, 0.9),    # y=0.9 (uneven)
+    seg(0.0, 2.0, 3.0, 2.0),    # y=2.0
+    seg(0.0, 3.1, 3.0, 3.1),    # y=3.1 (uneven)
+    seg(0.0, 4.0, 3.0, 4.0),    # y=4.0
+]
+
+result = metric_regularize_segments(
+    segments,
+    equal_spacing=True,
+    angle_tolerance=5.0,  # Lines within 5° are considered parallel
+)
+# Result: Lines are now evenly spaced at y=0, 1, 2, 3, 4
+```
+
+![Equal Spacing](docs/images/metric_equal_spacing.png)
+
 ### Contour Regularization
 
 Simplify complex polygons while preserving their essential shape:
@@ -292,6 +391,61 @@ Find T-junctions where endpoints are close to segment interiors.
 - `exclude_clusters`: Endpoint clusters to exclude (already handled by endpoint-to-endpoint snapping)
 
 **Returns:** List of `((segment_idx, endpoint_idx), target_segment_idx)` tuples
+
+### Metric Regularization
+
+#### `metric_regularize_segments(segments, equal_length=True, length_quantization=False, equal_spacing=True, base_unit=1.0, length_tolerance=0.1, quantization_tolerance=0.3, angle_tolerance=5.0, max_iterations=3)`
+
+Regularize segments using metric and pattern constraints.
+
+**Parameters:**
+- `segments`: List of segments, where each segment is a numpy array `[x1, y1, x2, y2]`
+- `equal_length`: Force segments with similar lengths to be exactly equal (default: `True`)
+- `length_quantization`: Snap lengths to multiples of `base_unit` (default: `False`)
+- `equal_spacing`: Force equal gaps between parallel lines (default: `True`)
+- `base_unit`: Base unit for length quantization, e.g., 1.0 meter (default: `1.0`)
+- `length_tolerance`: Relative tolerance for equal length detection (default: `0.1` = 10%)
+- `quantization_tolerance`: Tolerance for quantization as fraction of `base_unit` (default: `0.3`)
+- `angle_tolerance`: Maximum angle difference in degrees to consider lines parallel (default: `5.0`)
+- `max_iterations`: Maximum SQP iterations for iterative refinement (default: `3`)
+
+**Returns:** List of regularized segments
+
+**Note:** Uses linearization since length calculation is non-linear. The algorithm iteratively refines the solution using Sequential Quadratic Programming (SQP).
+
+#### `find_equal_length_pairs(segments, tolerance=0.1, min_length=0.5)`
+
+Find pairs of segments with similar lengths.
+
+**Parameters:**
+- `segments`: List of segments
+- `tolerance`: Maximum relative length difference to consider "similar" (default: `0.1`)
+- `min_length`: Minimum segment length to consider (default: `0.5`)
+
+**Returns:** List of `(segment_idx_a, segment_idx_b)` tuples
+
+#### `find_length_quantization_targets(segments, base_unit=1.0, tolerance=0.3, min_length=0.5)`
+
+Find segments whose lengths should be quantized to multiples of `base_unit`.
+
+**Parameters:**
+- `segments`: List of segments
+- `base_unit`: Base unit for quantization (default: `1.0`)
+- `tolerance`: Maximum distance from nearest multiple as fraction of `base_unit` (default: `0.3`)
+- `min_length`: Minimum segment length to consider (default: `0.5`)
+
+**Returns:** List of `(segment_idx, target_length)` tuples
+
+#### `find_parallel_line_groups(segments, angle_tolerance=5.0, min_group_size=3)`
+
+Find groups of parallel segments for equal spacing regularization.
+
+**Parameters:**
+- `segments`: List of segments
+- `angle_tolerance`: Maximum angle difference in degrees to consider parallel (default: `5.0`)
+- `min_group_size`: Minimum number of segments to form a group (default: `3`)
+
+**Returns:** List of groups, where each group is a list of segment indices
 
 ### Contour Regularization
 
@@ -434,6 +588,40 @@ minimize (1/2) Σᵢ (||uᵢ - ûᵢ||² + ||vᵢ - v̂ᵢ||²)
 3. **Variable Reduction** (cluster): Replace clusters with single variables
 4. **QP Solve** (hard/soft): Optimize using OSQP
 5. **T-Junction Handling**: Project endpoints onto target segments
+
+### Metric & Pattern Regularization
+
+Metric regularization constrains segment dimensions (length, distance). The challenge is that length calculation `√(Δx² + Δy²)` is **non-linear**, but QP solvers require linear constraints.
+
+**Linearization:** We approximate length using the segment's unit direction vector **d** = (dₓ, dᵧ):
+
+```
+L ≈ dₓ(xₑ - xₛ) + dᵧ(yₑ - yₛ)
+```
+
+This is linear in the endpoint coordinates and can be directly inserted into the constraint matrix.
+
+**Constraint Formulations:**
+
+| Constraint | Mathematical Form | Application |
+|------------|-------------------|-------------|
+| Equal Length | L_A - L_B = 0 | Windows, columns |
+| Quantization | L = K (target) | Grid snapping |
+| Equal Spacing | 2·Pos(L₂) - Pos(L₁) - Pos(L₃) = 0 | Stairs, arrays |
+
+**Iterative Refinement (SQP):** Because the unit vectors are computed from the *current* geometry, results are approximate if segments rotate significantly. The algorithm uses Sequential Quadratic Programming:
+
+1. Compute unit vectors from current segment orientations
+2. Build and solve the QP
+3. Update segment coordinates
+4. Repeat until convergence (or max iterations)
+
+**Pipeline:**
+1. **Detection**: Find candidate pairs/groups (similar lengths, parallel lines)
+2. **Linearization**: Compute unit direction vectors for length approximation
+3. **Constraint Building**: Build sparse constraint matrix A for detected patterns
+4. **QP Solve**: Minimize ||x - x̂||² subject to Ax = b using OSQP
+5. **Iteration**: Refine unit vectors and re-solve if needed
 
 ### Contour Regularization
 

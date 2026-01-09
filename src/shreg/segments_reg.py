@@ -937,6 +937,537 @@ def _solve_snap_soft(
     return result
 
 
+# =============================================================================
+# Metric & Pattern Regularization
+# =============================================================================
+# These constraints deal with segment dimensions (length, distance).
+# Because length calculation sqrt(dx^2 + dy^2) is non-linear, we use
+# linearization: approximate length as dot product with unit direction vector.
+
+
+def _get_unit_vector(segment: Segment) -> tuple[float, float]:
+    """Get unit direction vector from a segment.
+
+    Args:
+        segment: Segment array [x1, y1, x2, y2]
+
+    Returns:
+        Tuple (dx, dy) representing unit direction vector
+    """
+    x1, y1, x2, y2 = segment
+    dx = x2 - x1
+    dy = y2 - y1
+    length = np.sqrt(dx**2 + dy**2)
+    if length < 1e-9:
+        return 0.0, 0.0  # Degenerate segment
+    return dx / length, dy / length
+
+
+def _get_segment_length(segment: Segment) -> float:
+    """Calculate length of a segment."""
+    x1, y1, x2, y2 = segment
+    return float(np.sqrt((x2 - x1)**2 + (y2 - y1)**2))
+
+
+def find_equal_length_pairs(
+    segments: List[Segment],
+    tolerance: float = 0.1,
+    min_length: float = 0.5,
+) -> List[tuple[int, int]]:
+    """Find pairs of segments with similar lengths that should be equalized.
+
+    Args:
+        segments: List of segments
+        tolerance: Maximum relative length difference to consider "similar"
+        min_length: Minimum segment length to consider
+
+    Returns:
+        List of (segment_idx_a, segment_idx_b) pairs
+    """
+    n = len(segments)
+    lengths = [_get_segment_length(s) for s in segments]
+    pairs = []
+
+    for i in range(n):
+        if lengths[i] < min_length:
+            continue
+        for j in range(i + 1, n):
+            if lengths[j] < min_length:
+                continue
+            # Check relative difference
+            avg_len = (lengths[i] + lengths[j]) / 2
+            diff = abs(lengths[i] - lengths[j]) / avg_len
+            if diff < tolerance:
+                pairs.append((i, j))
+
+    return pairs
+
+
+def find_length_quantization_targets(
+    segments: List[Segment],
+    base_unit: float = 1.0,
+    tolerance: float = 0.3,
+    min_length: float = 0.5,
+) -> List[tuple[int, float]]:
+    """Find segments whose lengths should be quantized to multiples of base_unit.
+
+    Args:
+        segments: List of segments
+        base_unit: Base unit for quantization (e.g., 1.0 meter)
+        tolerance: Maximum distance from nearest multiple (as fraction of base_unit)
+        min_length: Minimum segment length to consider
+
+    Returns:
+        List of (segment_idx, target_length) tuples
+    """
+    targets = []
+
+    for i, seg in enumerate(segments):
+        length = _get_segment_length(seg)
+        if length < min_length:
+            continue
+
+        # Find nearest multiple of base_unit
+        k = round(length / base_unit)
+        if k < 1:
+            k = 1
+        target = k * base_unit
+
+        # Check if within tolerance
+        if abs(length - target) / base_unit < tolerance:
+            targets.append((i, target))
+
+    return targets
+
+
+def _orientation_difference(o1: float, o2: float) -> float:
+    """Calculate the absolute difference between two orientations.
+
+    Orientations are in [0, 180) degrees. Two lines are parallel if their
+    orientations are close to each other or close to 180° apart.
+
+    Args:
+        o1, o2: Orientations in degrees, range [0, 180)
+
+    Returns:
+        Absolute difference in degrees, range [0, 90]
+    """
+    diff = abs(o1 - o2)
+    # Handle wrap-around at 180°
+    if diff > 90:
+        diff = 180 - diff
+    return diff
+
+
+def find_parallel_line_groups(
+    segments: List[Segment],
+    angle_tolerance: float = 5.0,
+    min_group_size: int = 3,
+) -> List[List[int]]:
+    """Find groups of parallel segments that could have equal spacing.
+
+    Args:
+        segments: List of segments
+        angle_tolerance: Maximum angle difference (degrees) to consider parallel
+        min_group_size: Minimum number of segments to form a group
+
+    Returns:
+        List of groups, where each group is a list of segment indices
+    """
+    n = len(segments)
+    orientations = [geometry.orientation(s) for s in segments]
+
+    # Union-Find for grouping parallel segments
+    parent = list(range(n))
+
+    def find(x):
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+
+    def union(x, y):
+        px, py = find(x), find(y)
+        if px != py:
+            parent[px] = py
+
+    # Group segments with similar orientations
+    # Note: We use _orientation_difference instead of geometry.angle_difference
+    # because angle_difference is modulo 90 (treats horizontal and vertical as same)
+    for i in range(n):
+        for j in range(i + 1, n):
+            diff = _orientation_difference(orientations[i], orientations[j])
+            if diff < angle_tolerance:
+                union(i, j)
+
+    # Collect groups
+    from collections import defaultdict
+    groups_dict = defaultdict(list)
+    for i in range(n):
+        groups_dict[find(i)].append(i)
+
+    # Filter to groups with enough segments
+    groups = [g for g in groups_dict.values() if len(g) >= min_group_size]
+
+    return groups
+
+
+def _sort_parallel_lines_by_position(
+    segments: List[Segment],
+    indices: List[int],
+) -> List[int]:
+    """Sort parallel lines by their position along the common normal.
+
+    Args:
+        segments: All segments
+        indices: Indices of parallel segments to sort
+
+    Returns:
+        Sorted list of indices
+    """
+    if len(indices) < 2:
+        return indices
+
+    # Use average orientation to determine normal direction
+    avg_orientation = np.mean([geometry.orientation(segments[i]) for i in indices])
+    normal_angle = np.radians(avg_orientation + 90)
+    nx, ny = np.cos(normal_angle), np.sin(normal_angle)
+
+    # Project midpoints onto normal
+    positions = []
+    for idx in indices:
+        mid = geometry.midpoint(segments[idx])
+        pos = nx * mid[0] + ny * mid[1]
+        positions.append((pos, idx))
+
+    positions.sort()
+    return [idx for _, idx in positions]
+
+
+def _add_equal_length_constraint(
+    rows: List[int],
+    cols: List[int],
+    data: List[float],
+    constraint_idx: int,
+    seg_idx_a: int,
+    seg_idx_b: int,
+    segments: List[Segment],
+) -> int:
+    """Add an equal length constraint between two segments.
+
+    Uses linearization: L ≈ dx*(xe-xs) + dy*(ye-ys)
+
+    The constraint is: L_A - L_B = 0
+
+    Args:
+        rows, cols, data: Sparse matrix building lists
+        constraint_idx: Current constraint row index
+        seg_idx_a, seg_idx_b: Segment indices
+        segments: List of segments
+
+    Returns:
+        Next constraint index (constraint_idx + 1)
+    """
+    # Get unit vectors for linearization
+    d_xA, d_yA = _get_unit_vector(segments[seg_idx_a])
+    d_xB, d_yB = _get_unit_vector(segments[seg_idx_b])
+
+    # State vector layout: [x1_s0, y1_s0, x2_s0, y2_s0, x1_s1, y1_s1, ...]
+    # For segment i: start=(4*i, 4*i+1), end=(4*i+2, 4*i+3)
+    idx_Ax_s = seg_idx_a * 4 + 0
+    idx_Ay_s = seg_idx_a * 4 + 1
+    idx_Ax_e = seg_idx_a * 4 + 2
+    idx_Ay_e = seg_idx_a * 4 + 3
+
+    idx_Bx_s = seg_idx_b * 4 + 0
+    idx_By_s = seg_idx_b * 4 + 1
+    idx_Bx_e = seg_idx_b * 4 + 2
+    idx_By_e = seg_idx_b * 4 + 3
+
+    # Segment A coefficients: +dxA*(xe-xs) + dyA*(ye-ys)
+    # End point (positive)
+    rows.append(constraint_idx); cols.append(idx_Ax_e); data.append(d_xA)
+    rows.append(constraint_idx); cols.append(idx_Ay_e); data.append(d_yA)
+    # Start point (negative)
+    rows.append(constraint_idx); cols.append(idx_Ax_s); data.append(-d_xA)
+    rows.append(constraint_idx); cols.append(idx_Ay_s); data.append(-d_yA)
+
+    # Segment B coefficients (subtracted): -dxB*(xe-xs) - dyB*(ye-ys)
+    rows.append(constraint_idx); cols.append(idx_Bx_e); data.append(-d_xB)
+    rows.append(constraint_idx); cols.append(idx_By_e); data.append(-d_yB)
+    rows.append(constraint_idx); cols.append(idx_Bx_s); data.append(d_xB)
+    rows.append(constraint_idx); cols.append(idx_By_s); data.append(d_yB)
+
+    return constraint_idx + 1
+
+
+def _add_length_quantization_constraint(
+    rows: List[int],
+    cols: List[int],
+    data: List[float],
+    rhs: List[float],
+    constraint_idx: int,
+    seg_idx: int,
+    target_length: float,
+    segments: List[Segment],
+) -> int:
+    """Add a length quantization constraint for a segment.
+
+    The constraint is: L_A = K (target_length)
+
+    Args:
+        rows, cols, data: Sparse matrix building lists
+        rhs: Right-hand side values list
+        constraint_idx: Current constraint row index
+        seg_idx: Segment index
+        target_length: Target quantized length
+        segments: List of segments
+
+    Returns:
+        Next constraint index (constraint_idx + 1)
+    """
+    d_x, d_y = _get_unit_vector(segments[seg_idx])
+
+    idx_x_s = seg_idx * 4 + 0
+    idx_y_s = seg_idx * 4 + 1
+    idx_x_e = seg_idx * 4 + 2
+    idx_y_e = seg_idx * 4 + 3
+
+    # Constraint: dx*(xe-xs) + dy*(ye-ys) = K
+    rows.append(constraint_idx); cols.append(idx_x_e); data.append(d_x)
+    rows.append(constraint_idx); cols.append(idx_y_e); data.append(d_y)
+    rows.append(constraint_idx); cols.append(idx_x_s); data.append(-d_x)
+    rows.append(constraint_idx); cols.append(idx_y_s); data.append(-d_y)
+
+    rhs.append(target_length)
+
+    return constraint_idx + 1
+
+
+def _add_equal_spacing_constraint(
+    rows: List[int],
+    cols: List[int],
+    data: List[float],
+    constraint_idx: int,
+    idx1: int,
+    idx2: int,
+    idx3: int,
+    segments: List[Segment],
+) -> int:
+    """Add an equal spacing constraint for three parallel lines.
+
+    Forces the middle line (idx2) to be equidistant from idx1 and idx3.
+    Constraint: 2*Pos(L2) - Pos(L1) - Pos(L3) = 0
+
+    Position is computed by projecting the midpoint onto the common normal.
+
+    Args:
+        rows, cols, data: Sparse matrix building lists
+        constraint_idx: Current constraint row index
+        idx1, idx2, idx3: Segment indices (sorted by position)
+        segments: List of segments
+
+    Returns:
+        Next constraint index (constraint_idx + 2 for x and y)
+    """
+    # Compute common normal direction (perpendicular to line direction)
+    # Use average orientation of the three lines
+    avg_orientation = (
+        geometry.orientation(segments[idx1]) +
+        geometry.orientation(segments[idx2]) +
+        geometry.orientation(segments[idx3])
+    ) / 3
+    normal_angle = np.radians(avg_orientation + 90)
+    nx, ny = np.cos(normal_angle), np.sin(normal_angle)
+
+    # Midpoint indices: midpoint = ((x1+x2)/2, (y1+y2)/2)
+    # For segment i: mid_x = (x[4i] + x[4i+2])/2, mid_y = (x[4i+1] + x[4i+3])/2
+    # Position on normal: P = nx * mid_x + ny * mid_y
+    #                      = nx/2 * (x_s + x_e) + ny/2 * (y_s + y_e)
+
+    # Constraint: 2*P2 - P1 - P3 = 0
+    # Expanding: nx*(x2_s + x2_e) + ny*(y2_s + y2_e)
+    #          - nx/2*(x1_s + x1_e) - ny/2*(y1_s + y1_e)
+    #          - nx/2*(x3_s + x3_e) - ny/2*(y3_s + y3_e) = 0
+
+    def add_segment_contribution(seg_idx: int, coeff: float):
+        # coeff is applied to the position term
+        rows.append(constraint_idx); cols.append(seg_idx * 4 + 0); data.append(coeff * nx / 2)
+        rows.append(constraint_idx); cols.append(seg_idx * 4 + 1); data.append(coeff * ny / 2)
+        rows.append(constraint_idx); cols.append(seg_idx * 4 + 2); data.append(coeff * nx / 2)
+        rows.append(constraint_idx); cols.append(seg_idx * 4 + 3); data.append(coeff * ny / 2)
+
+    add_segment_contribution(idx1, -1.0)
+    add_segment_contribution(idx2, 2.0)
+    add_segment_contribution(idx3, -1.0)
+
+    return constraint_idx + 1
+
+
+def metric_regularize_segments(
+    segments: List[Segment],
+    equal_length: bool = True,
+    length_quantization: bool = False,
+    equal_spacing: bool = True,
+    base_unit: float = 1.0,
+    length_tolerance: float = 0.1,
+    quantization_tolerance: float = 0.3,
+    angle_tolerance: float = 5.0,
+    max_iterations: int = 3,
+    debug: bool = False,
+) -> List[Segment]:
+    """Regularize segments using metric and pattern constraints.
+
+    This implements three types of metric regularization:
+    1. Equal Length: Forces segments with similar lengths to be exactly equal
+    2. Length Quantization: Snaps lengths to multiples of a base unit
+    3. Equal Spacing: Forces equal gaps between parallel lines
+
+    Uses linearization and iterative refinement (SQP) since length is non-linear.
+
+    Args:
+        segments: List of segments to regularize
+        equal_length: Enable equal length regularization
+        length_quantization: Enable length quantization
+        equal_spacing: Enable equal spacing for parallel lines
+        base_unit: Base unit for length quantization
+        length_tolerance: Relative tolerance for equal length detection
+        quantization_tolerance: Tolerance for quantization (fraction of base_unit)
+        angle_tolerance: Angle tolerance for parallel line detection (degrees)
+        max_iterations: Maximum SQP iterations for refinement
+        debug: Print debug information
+
+    Returns:
+        List of regularized segments
+    """
+    if len(segments) == 0:
+        return segments
+
+    # Convert to numpy arrays if needed
+    segments = [
+        np.array(s, dtype=np.float64) if not isinstance(s, np.ndarray) else s.astype(np.float64)
+        for s in segments
+    ]
+
+    n = len(segments)
+    num_vars = 4 * n
+
+    for iteration in range(max_iterations):
+        if debug:
+            log.info(f"Metric regularization iteration {iteration + 1}/{max_iterations}")
+
+        # Build original coordinate vector
+        x_hat = np.zeros(num_vars)
+        for i, seg in enumerate(segments):
+            x_hat[4*i:4*i+4] = seg
+
+        # Collect constraints
+        rows, cols, data = [], [], []
+        rhs_values = []
+        num_constraints = 0
+
+        # 1. Equal Length constraints
+        if equal_length:
+            pairs = find_equal_length_pairs(segments, tolerance=length_tolerance)
+            if debug:
+                log.info(f"  Found {len(pairs)} equal length pairs")
+            for seg_a, seg_b in pairs:
+                num_constraints = _add_equal_length_constraint(
+                    rows, cols, data, num_constraints, seg_a, seg_b, segments
+                )
+                rhs_values.append(0.0)
+
+        # 2. Length Quantization constraints
+        if length_quantization:
+            targets = find_length_quantization_targets(
+                segments, base_unit=base_unit, tolerance=quantization_tolerance
+            )
+            if debug:
+                log.info(f"  Found {len(targets)} quantization targets")
+            for seg_idx, target_len in targets:
+                num_constraints = _add_length_quantization_constraint(
+                    rows, cols, data, rhs_values, num_constraints, seg_idx, target_len, segments
+                )
+
+        # 3. Equal Spacing constraints
+        if equal_spacing:
+            parallel_groups = find_parallel_line_groups(
+                segments, angle_tolerance=angle_tolerance
+            )
+            if debug:
+                log.info(f"  Found {len(parallel_groups)} parallel line groups")
+
+            for group in parallel_groups:
+                # Sort by position
+                sorted_group = _sort_parallel_lines_by_position(segments, group)
+
+                # Add constraints for consecutive triplets
+                for k in range(len(sorted_group) - 2):
+                    num_constraints = _add_equal_spacing_constraint(
+                        rows, cols, data, num_constraints,
+                        sorted_group[k], sorted_group[k+1], sorted_group[k+2],
+                        segments
+                    )
+                    rhs_values.append(0.0)
+
+        if num_constraints == 0:
+            if debug:
+                log.info("  No constraints found, returning unchanged")
+            return segments
+
+        # Build QP problem
+        # Objective: minimize ||x - x_hat||^2 = x'Ix - 2*x_hat'x + const
+        H = sparse.eye(num_vars, format='csc')
+        f = -x_hat
+
+        # Constraint matrix
+        A_eq = sparse.csc_matrix(
+            (data, (rows, cols)), shape=(num_constraints, num_vars)
+        )
+        b_eq = np.array(rhs_values)
+
+        # OSQP format: l <= Ax <= u (equality: l = u = b)
+        A_full = sparse.vstack([
+            A_eq,
+            sparse.eye(num_vars)
+        ], format='csc')
+
+        l_full = np.concatenate([b_eq, np.full(num_vars, -1e12)])
+        u_full = np.concatenate([b_eq, np.full(num_vars, 1e12)])
+
+        # Solve
+        prob = osqp.OSQP()
+        try:
+            prob.setup(H, f, A_full, l_full, u_full,
+                      eps_abs=1e-08, eps_rel=1e-08, verbose=False)
+            res = prob.solve()
+            x_opt = res.x
+
+            if res.info.status != 'solved':
+                if debug:
+                    log.info(f"  Solver status: {res.info.status}")
+                break
+
+        except Exception as ex:
+            log.info(f"Metric optimization failed: {ex}")
+            break
+
+        # Update segments from solution
+        for i in range(n):
+            segments[i] = np.array(x_opt[4*i:4*i+4], dtype=np.float64)
+
+        # Check convergence (change in coordinates)
+        change = np.linalg.norm(x_opt - x_hat)
+        if debug:
+            log.info(f"  Coordinate change: {change:.6f}")
+
+        if change < 1e-6:
+            if debug:
+                log.info("  Converged")
+            break
+
+    return segments
+
+
 def fit_line_segment(points: np.ndarray) -> tuple[float, float, float, float]:
     """Fit a line segment to set of 2d points and return x1, y1, x2, y2."""
     x = points[:, 0]

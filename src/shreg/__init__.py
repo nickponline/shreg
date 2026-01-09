@@ -20,6 +20,11 @@ from .segments_reg import (
     create_example_offsets,
     process_real,
     seg,
+    # Metric & Pattern regularization
+    metric_regularize_segments,
+    find_equal_length_pairs,
+    find_length_quantization_targets,
+    find_parallel_line_groups,
 )
 
 # Contour regularization
@@ -62,6 +67,11 @@ __all__ = [
     "create_example_offsets",
     "process_real",
     "seg",
+    # Metric & Pattern regularization
+    "metric_regularize_segments",
+    "find_equal_length_pairs",
+    "find_length_quantization_targets",
+    "find_parallel_line_groups",
     # Contour regularization
     "regularize_contour",
     "load_polylines",
